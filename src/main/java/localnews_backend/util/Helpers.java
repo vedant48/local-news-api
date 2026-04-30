@@ -10,7 +10,8 @@ public final class Helpers {
 
     public static String capitalize(String value) {
         if (isBlank(value)) return value;
-        return value.substring(0, 1).toUpperCase() + value.substring(1).toLowerCase();
+        return value.substring(0, 1).toUpperCase()
+                + (value.length() > 1 ? value.substring(1).toLowerCase() : "");
     }
 
     public static String sanitize(String value) {

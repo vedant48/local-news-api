@@ -1,13 +1,11 @@
 package localnews_backend.dto;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 
 @Data
-@AllArgsConstructor
 public class AuthResponse {
-    private String token;
-    private String type = "Bearer";
+    private final String token;
+    private final String type = "Bearer";
 
     public AuthResponse(String token) {
         this.token = token;
