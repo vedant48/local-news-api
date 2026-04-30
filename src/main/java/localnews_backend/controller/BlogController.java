@@ -1,6 +1,7 @@
 package localnews_backend.controller;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import localnews_backend.dto.BlogRequest;
 import localnews_backend.model.Blog;
 import localnews_backend.model.User;
@@ -14,14 +15,13 @@ import java.util.List;
 @RestController
 @RequestMapping("/blogs")
 @RequiredArgsConstructor
-@CrossOrigin
 public class BlogController {
 
     private final BlogService blogService;
     private final UserRepository userRepository;
 
     @PostMapping("/generate")
-    public Blog generateBlog(@RequestBody BlogRequest request,
+    public Blog generateBlog(@Valid @RequestBody BlogRequest request,
                              HttpServletRequest httpRequest) {
 
         String email = (String) httpRequest.getAttribute("email");
