@@ -51,7 +51,7 @@ public class GlobalExceptionHandler {
         if (lower.contains("access denied"))                                          return HttpStatus.FORBIDDEN;
         if (lower.contains("not found"))                                              return HttpStatus.NOT_FOUND;
         if (lower.contains("already exists"))                                        return HttpStatus.CONFLICT;
-        return HttpStatus.BAD_REQUEST;
+        return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private Map<String, Object> buildBody(HttpStatus status, String message) {
