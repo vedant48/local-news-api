@@ -9,6 +9,8 @@ import org.springframework.data.mongodb.config.EnableMongoAuditing;
 
 import jakarta.annotation.PostConstruct;
 
+import java.util.Objects;
+
 @Configuration
 @EnableMongoAuditing
 public class MongoConfig {
@@ -20,7 +22,12 @@ public class MongoConfig {
 
     @PostConstruct
     public void logMongoTarget() {
-        ConnectionString connectionString = new ConnectionString(mongoUri);
+        String resolvedMongoUri = Objects.requireNonNull(mongoUri, "spring.data.mongodb.uri must be configured").trim();
+        if (resolvedMongoUri.isEmpty()) {
+            throw new IllegalStateException("spring.data.mongodb.uri must be configured and non-empty");
+        }
+
+        ConnectionString connectionString = new ConnectionString(resolvedMongoUri);
         String hostSummary = String.join(",", connectionString.getHosts());
         String database = connectionString.getDatabase() != null ? connectionString.getDatabase() : "(default)";
 
