@@ -239,7 +239,9 @@ public class AIService {
         String[] segments = path.split("/");
         if (segments.length > segmentIndex) {
             String candidate = segments[segmentIndex];
-            if (candidate.matches(YOUTUBE_ID_REGEX)) return Optional.of(candidate);
+            if (candidate.length() == 11 && candidate.matches(YOUTUBE_ID_REGEX)) {
+                return Optional.of(candidate);
+            }
         }
         return Optional.empty();
     }
@@ -251,7 +253,9 @@ public class AIService {
         for (String param : query.split("&")) {
             if (param.startsWith(prefix)) {
                 String candidate = param.substring(prefix.length());
-                if (candidate.matches(YOUTUBE_ID_REGEX)) return Optional.of(candidate);
+                if (candidate.length() == 11 && candidate.matches(YOUTUBE_ID_REGEX)) {
+                    return Optional.of(candidate);
+                }
             }
         }
         return Optional.empty();
