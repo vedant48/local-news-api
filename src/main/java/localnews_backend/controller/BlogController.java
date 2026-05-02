@@ -20,6 +20,7 @@ public class BlogController {
     private final BlogService blogService;
     private final UserRepository userRepository;
 
+    /** Generate a blog post from a video URL (REPORTER role required). */
     @PostMapping("/generate")
     public Blog generateBlog(@Valid @RequestBody BlogRequest request,
                              HttpServletRequest httpRequest) {
@@ -40,8 +41,15 @@ public class BlogController {
         return blogService.generateBlog(request, email);
     }
 
+    /** Return all published blogs (public). */
     @GetMapping
     public List<Blog> getAllBlogs() {
         return blogService.getAllBlogs();
+    }
+
+    /** Return a single blog by its id (public). */
+    @GetMapping("/{id}")
+    public Blog getBlogById(@PathVariable String id) {
+        return blogService.getBlogById(id);
     }
 }
