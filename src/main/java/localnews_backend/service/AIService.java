@@ -9,9 +9,9 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Calls the Google Gemini 1.5 Pro REST API to convert a video URL into a
@@ -29,10 +29,7 @@ public class AIService {
     private static final String GEMINI_ENDPOINT =
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
 
-    /** Matches YouTube watch / short / embed URLs and extracts the 11-char video ID. */
-    private static final Pattern YOUTUBE_ID_PATTERN = Pattern.compile(
-            "(?:youtube\\.com/(?:watch\\?(?:.*&)?v=|embed/|shorts/)|youtu\\.be/)([A-Za-z0-9_-]{11})"
-    );
+    private static final String YOUTUBE_ID_REGEX = "[A-Za-z0-9_-]{11}";
 
     @Value("${gemini.api.key:}")
     private String geminiApiKey;
@@ -62,7 +59,8 @@ public class AIService {
             Map<String, Object> requestBody = buildGeminiRequest(videoUrl);
 
             String rawResponse = restClient.post()
-                    .uri(GEMINI_ENDPOINT + "?key=" + geminiApiKey)
+                    .uri(GEMINI_ENDPOINT)
+                    .header("x-goog-api-key", geminiApiKey)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(requestBody)
                     .retrieve()
@@ -113,7 +111,7 @@ public class AIService {
 
     private String buildPrompt(String videoUrl, Optional<String> youtubeId) {
         String videoInstruction = youtubeId.isPresent()
-                ? "Thoroughly analyse the provided YouTube video."
+                ? "Thoroughly analyze the provided YouTube video."
                 : "Create a blog post about the video available at: " + videoUrl;
 
         String coverImageEntry = youtubeId
@@ -197,13 +195,66 @@ public class AIService {
     // ── Utility ───────────────────────────────────────────────────────────────
 
     /**
-     * Extracts the 11-character YouTube video ID from a URL, or an empty
-     * Optional if the URL is not a recognised YouTube link.
+     * Extracts the 11-character YouTube video ID from a URL using standard URI
+     * parsing – no regex backtracking, no ReDoS risk.
+     *
+     * <p>Handles the following URL forms:
+     * <ul>
+     *   <li>{@code https://www.youtube.com/watch?v=ID}</li>
+     *   <li>{@code https://www.youtube.com/watch?list=X&v=ID}</li>
+     *   <li>{@code https://www.youtube.com/embed/ID}</li>
+     *   <li>{@code https://www.youtube.com/shorts/ID}</li>
+     *   <li>{@code https://youtu.be/ID}</li>
+     * </ul>
      */
     public Optional<String> extractYoutubeId(String url) {
         if (url == null || url.isBlank()) return Optional.empty();
-        Matcher matcher = YOUTUBE_ID_PATTERN.matcher(url);
-        return matcher.find() ? Optional.of(matcher.group(1)) : Optional.empty();
+        try {
+            URI uri = URI.create(url);
+            String host = uri.getHost();
+            if (host == null) return Optional.empty();
+
+            if (host.endsWith("youtu.be")) {
+                return idFromPath(uri.getPath(), 1);
+            }
+
+            if (host.endsWith("youtube.com")) {
+                String path = uri.getPath() != null ? uri.getPath() : "";
+                if (path.startsWith("/embed/") || path.startsWith("/shorts/")) {
+                    return idFromPath(path, 2);
+                }
+                if (path.equals("/watch")) {
+                    return idFromQueryParam(uri.getQuery(), "v");
+                }
+            }
+        } catch (Exception ignored) {
+            // Malformed URL – treat as non-YouTube
+        }
+        return Optional.empty();
+    }
+
+    /** Returns the path segment at {@code segmentIndex} (1-based) if it is a valid video ID. */
+    private Optional<String> idFromPath(String path, int segmentIndex) {
+        if (path == null) return Optional.empty();
+        String[] segments = path.split("/");
+        if (segments.length > segmentIndex) {
+            String candidate = segments[segmentIndex];
+            if (candidate.matches(YOUTUBE_ID_REGEX)) return Optional.of(candidate);
+        }
+        return Optional.empty();
+    }
+
+    /** Returns the value of a query parameter by name if it is a valid video ID. */
+    private Optional<String> idFromQueryParam(String query, String paramName) {
+        if (query == null) return Optional.empty();
+        String prefix = paramName + "=";
+        for (String param : query.split("&")) {
+            if (param.startsWith(prefix)) {
+                String candidate = param.substring(prefix.length());
+                if (candidate.matches(YOUTUBE_ID_REGEX)) return Optional.of(candidate);
+            }
+        }
+        return Optional.empty();
     }
 
     // ── Placeholder fallback ──────────────────────────────────────────────────
@@ -235,3 +286,4 @@ public class AIService {
         return blog;
     }
 }
+

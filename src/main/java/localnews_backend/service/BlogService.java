@@ -22,7 +22,7 @@ public class BlogService {
 
     public Blog generateBlog(BlogRequest request, String email) {
         User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new RuntimeException("User not found: " + email));
 
         AIGeneratedBlog ai = aiService.generateBlogFromVideo(request.getVideoUrl());
 
