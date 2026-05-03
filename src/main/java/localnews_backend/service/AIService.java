@@ -1,125 +1,170 @@
 package localnews_backend.service;
 
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import localnews_backend.dto.AIGeneratedBlog;
+import localnews_backend.exception.OllamaException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 
+import java.io.*;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Calls the Google Gemini 1.5 Pro REST API to convert a video URL into a
- * production-grade, structured blog post.
+ * Converts a YouTube video URL into a structured, SEO-friendly blog post by:
+ * <ol>
+ *   <li>Extracting the English transcript via {@link TranscriptExtractionService} (yt-dlp).</li>
+ *   <li>Sending a structured JSON prompt to a locally running Ollama instance.</li>
+ *   <li>Parsing the model output and mapping it to {@link AIGeneratedBlog}.</li>
+ * </ol>
  *
- * <p>Configure {@code gemini.api.key} in {@code application.properties} (or the
- * {@code GEMINI_API_KEY} environment variable) to enable live generation.
- * When no key is present the service returns a safe placeholder so the rest of
- * the application still functions during local development.
+ * <p>Configure the following properties in {@code application.properties}:
+ * <ul>
+ *   <li>{@code ollama.model} – Ollama model name (default: {@code llama3})</li>
+ *   <li>{@code ollama.timeout.seconds} – Generation timeout in seconds (default: {@code 300})</li>
+ *   <li>{@code transcript.max.chars} – Maximum transcript length fed to the model (default: {@code 4000})</li>
+ * </ul>
  */
 @Service
 @Slf4j
 public class AIService {
 
-    private static final String GEMINI_ENDPOINT =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
-
     private static final String YOUTUBE_ID_REGEX = "[A-Za-z0-9_-]{11}";
 
-    @Value("${gemini.api.key:}")
-    private String geminiApiKey;
+    /** Matches a JSON object possibly wrapped in a markdown code fence. */
+    private static final Pattern JSON_FENCE =
+            Pattern.compile("```(?:json)?\\s*(\\{[\\s\\S]*?\\})\\s*```", Pattern.DOTALL);
 
-    private final RestClient restClient;
+    private static final Pattern JSON_OBJECT =
+            Pattern.compile("\\{[\\s\\S]*\\}", Pattern.DOTALL);
+
+    @Value("${ollama.model:llama3}")
+    private String ollamaModel;
+
+    @Value("${ollama.timeout.seconds:300}")
+    private int ollamaTimeoutSeconds;
+
+    @Value("${transcript.max.chars:4000}")
+    private int transcriptMaxChars;
+
+    private final TranscriptExtractionService transcriptService;
     private final ObjectMapper objectMapper;
 
-    public AIService(ObjectMapper objectMapper) {
-        this.restClient = RestClient.create();
+    public AIService(TranscriptExtractionService transcriptService,
+                     ObjectMapper objectMapper) {
+        this.transcriptService = transcriptService;
         this.objectMapper = objectMapper;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Generates a fully structured blog from the supplied video URL.
-     * Falls back to a safe placeholder when the Gemini API key is missing or
-     * the upstream call fails.
+     * Generates a fully structured blog from the supplied YouTube video URL.
+     *
+     * @param videoUrl a YouTube watch / short / embed URL
+     * @return structured blog post
+     * @throws localnews_backend.exception.InvalidYoutubeUrlException    if the URL is not a valid YouTube URL
+     * @throws localnews_backend.exception.TranscriptExtractionException if yt-dlp fails
+     * @throws OllamaException                                           if Ollama is unavailable or times out
      */
     public AIGeneratedBlog generateBlogFromVideo(String videoUrl) {
-        if (geminiApiKey == null || geminiApiKey.isBlank()) {
-            log.warn("gemini.api.key is not set – returning placeholder blog for: {}", videoUrl);
-            return buildPlaceholderBlog(videoUrl);
+        log.info("Generating blog for video URL: {}", videoUrl);
+
+        String transcript = transcriptService.extractTranscript(videoUrl);
+        String truncatedTranscript = truncateTranscript(transcript);
+
+        log.info("Transcript extracted ({} chars, fed {} chars to model)",
+                transcript.length(), truncatedTranscript.length());
+
+        String prompt = buildPrompt(truncatedTranscript);
+        String rawOutput = callOllama(prompt);
+
+        AIGeneratedBlog blog = parseOllamaOutput(rawOutput);
+        backfillCoverImage(blog, videoUrl);
+
+        log.info("Blog generated: title='{}'", blog.getTitle());
+        return blog;
+    }
+
+    // ── Ollama process ────────────────────────────────────────────────────────
+
+    private String callOllama(String prompt) {
+        List<String> command = List.of("ollama", "run", ollamaModel);
+        log.debug("Calling Ollama model '{}' (timeout: {}s)", ollamaModel, ollamaTimeoutSeconds);
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectErrorStream(false);
+
+        Process process;
+        try {
+            process = pb.start();
+        } catch (IOException e) {
+            throw new OllamaException(
+                    "Ollama is not installed or could not be started. " +
+                    "Ensure Ollama is running locally: " + e.getMessage(), e);
         }
+
+        // Write prompt to Ollama's stdin and close the stream
+        try (OutputStream stdin = process.getOutputStream();
+             PrintWriter writer = new PrintWriter(
+                     new BufferedWriter(new OutputStreamWriter(stdin, StandardCharsets.UTF_8)))) {
+            writer.print(prompt);
+        } catch (IOException e) {
+            process.destroyForcibly();
+            throw new OllamaException("Failed to write prompt to Ollama: " + e.getMessage(), e);
+        }
+
+        // Read stdout in a background thread to prevent buffer deadlock
+        StringBuilder outputBuilder = new StringBuilder();
+        Thread readerThread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    outputBuilder.append(line).append('\n');
+                }
+            } catch (IOException ignored) {
+                // process ended
+            }
+        });
+        readerThread.setDaemon(true);
+        readerThread.start();
 
         try {
-            Map<String, Object> requestBody = buildGeminiRequest(videoUrl);
-
-            String rawResponse = restClient.post()
-                    .uri(GEMINI_ENDPOINT)
-                    .header("x-goog-api-key", geminiApiKey)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
-
-            return parseGeminiResponse(rawResponse, videoUrl);
-        } catch (Exception e) {
-            log.error("Gemini blog generation failed for URL '{}': {}", videoUrl, e.getMessage(), e);
-            return buildPlaceholderBlog(videoUrl);
-        }
-    }
-
-    // ── Gemini request building ───────────────────────────────────────────────
-
-    private Map<String, Object> buildGeminiRequest(String videoUrl) {
-        List<Map<String, Object>> parts = new ArrayList<>();
-
-        // For YouTube URLs Gemini can stream the video directly via fileData.
-        Optional<String> youtubeId = extractYoutubeId(videoUrl);
-        if (youtubeId.isPresent()) {
-            Map<String, Object> fileData = new LinkedHashMap<>();
-            fileData.put("fileUri", videoUrl);
-            fileData.put("mimeType", "video/*");
-
-            Map<String, Object> filePart = new LinkedHashMap<>();
-            filePart.put("fileData", fileData);
-            parts.add(filePart);
+            boolean finished = process.waitFor(ollamaTimeoutSeconds, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new OllamaException(
+                        "Ollama timed out after " + ollamaTimeoutSeconds + " seconds");
+            }
+            readerThread.join(Math.max(5_000L, ollamaTimeoutSeconds * 1000L));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new OllamaException("Ollama process was interrupted", e);
         }
 
-        Map<String, Object> textPart = new LinkedHashMap<>();
-        textPart.put("text", buildPrompt(videoUrl, youtubeId));
-        parts.add(textPart);
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+            throw new OllamaException(
+                    "Ollama exited with non-zero status code: " + exitCode);
+        }
 
-        Map<String, Object> content = new LinkedHashMap<>();
-        content.put("parts", parts);
-
-        Map<String, Object> generationConfig = new LinkedHashMap<>();
-        generationConfig.put("responseMimeType", "application/json");
-        generationConfig.put("temperature", 0.7);
-        generationConfig.put("maxOutputTokens", 8192);
-
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("contents", List.of(content));
-        request.put("generationConfig", generationConfig);
-
-        return request;
+        return outputBuilder.toString().trim();
     }
 
-    private String buildPrompt(String videoUrl, Optional<String> youtubeId) {
-        String videoInstruction = youtubeId.isPresent()
-                ? "Thoroughly analyze the provided YouTube video."
-                : "Create a blog post about the video available at: " + videoUrl;
+    // ── Prompt building ───────────────────────────────────────────────────────
 
-        String coverImageEntry = youtubeId
-                .map(id -> "\"coverImageUrl\": \"https://img.youtube.com/vi/" + id + "/maxresdefault.jpg\"")
-                .orElse("\"coverImageUrl\": null");
-
+    private String buildPrompt(String transcript) {
         return """
-                You are an expert journalist and content strategist. %s
+                You are an expert journalist and content strategist.
+
+                Convert the following YouTube video transcript into a professional news blog article.
 
                 Return ONLY a single valid JSON object – no markdown fences, no extra text – matching this exact schema:
                 {
@@ -129,7 +174,6 @@ public class AIService {
                   "slug": "url-friendly-hyphenated-slug-from-title",
                   "excerpt": "2-3 sentence compelling teaser that hooks the reader",
                   "category": "one of: News | Technology | Business | Sports | Entertainment | Politics | Health | Science | Education | Lifestyle",
-                  %s,
                   "readingTimeMinutes": <integer>,
                   "tableOfContents": [
                     { "id": "section-slug", "heading": "Section Heading", "level": "h2" }
@@ -139,7 +183,7 @@ public class AIService {
                       "id": "section-slug",
                       "heading": "Section Heading",
                       "level": "h2",
-                      "content": "Detailed **markdown** content with proper formatting, statistics, analysis and examples (minimum 150 words per section)."
+                      "content": "Detailed markdown content with proper formatting (minimum 150 words per section)."
                     }
                   ],
                   "keyTakeaways": [
@@ -153,46 +197,83 @@ public class AIService {
                     { "question": "Reader question?", "answer": "Comprehensive answer." }
                   ],
                   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
-                  "content": "Complete polished markdown blog post (minimum 800 words, include all sections with headings, lists, bold text, and a strong conclusion)"
+                  "content": "Complete polished markdown blog post (minimum 800 words)"
                 }
+
+                Include:
+                - Catchy headline
+                - Structured subheadings (h2 / h3)
+                - Summary / TL;DR section
+                - Key highlights
+                - SEO keywords in the tags array
+                - Conclusion
 
                 Requirements:
                 - Professional, engaging journalistic tone
-                - At least 5 detailed sections (each ≥ 150 words)
+                - At least 4 detailed sections (each ≥ 150 words)
                 - Markdown formatting throughout (headers, bold, italic, bullet lists)
-                - Include real context, statistics, and analysis where available
-                - 4–6 FAQ items covering likely reader questions
-                - All JSON strings must be properly escaped (no raw newlines inside JSON values)
-                """.formatted(videoInstruction, coverImageEntry);
+                - 3-5 FAQ items covering likely reader questions
+                - All JSON strings must be properly escaped (no raw newlines inside JSON string values)
+
+                Transcript:
+                %s
+                """.formatted(transcript);
     }
 
     // ── Response parsing ──────────────────────────────────────────────────────
 
-    private AIGeneratedBlog parseGeminiResponse(String rawResponse, String videoUrl) throws Exception {
-        JsonNode root = objectMapper.readTree(rawResponse);
-
-        String jsonText = root
-                .path("candidates")
-                .path(0)
-                .path("content")
-                .path("parts")
-                .path(0)
-                .path("text")
-                .asText();
-
-        AIGeneratedBlog blog = objectMapper.readValue(jsonText, AIGeneratedBlog.class);
-
-        // Backfill YouTube thumbnail when Gemini omits it
-        if (blog.getCoverImageUrl() == null || blog.getCoverImageUrl().isBlank()) {
-            extractYoutubeId(videoUrl).ifPresent(id ->
-                    blog.setCoverImageUrl("https://img.youtube.com/vi/" + id + "/maxresdefault.jpg")
-            );
+    /**
+     * Attempts to deserialise {@code rawOutput} as JSON.
+     * Falls back to extracting the first JSON object from the text if the
+     * output contains explanatory prose around it, then falls back to a
+     * minimal plain-text blog if JSON parsing fails entirely.
+     */
+    private AIGeneratedBlog parseOllamaOutput(String rawOutput) {
+        if (rawOutput == null || rawOutput.isBlank()) {
+            log.warn("Ollama returned empty output; building minimal blog");
+            return buildMinimalBlog(null);
         }
 
-        return blog;
+        // 1. Try direct parse
+        try {
+            return objectMapper.readValue(rawOutput, AIGeneratedBlog.class);
+        } catch (Exception ignored) {
+            // fall through
+        }
+
+        // 2. Strip markdown code fence and retry
+        Matcher fenceMatcher = JSON_FENCE.matcher(rawOutput);
+        if (fenceMatcher.find()) {
+            try {
+                return objectMapper.readValue(fenceMatcher.group(1), AIGeneratedBlog.class);
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+
+        // 3. Locate first '{' … last '}' in the output and retry
+        Matcher objectMatcher = JSON_OBJECT.matcher(rawOutput);
+        if (objectMatcher.find()) {
+            try {
+                return objectMapper.readValue(objectMatcher.group(), AIGeneratedBlog.class);
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+
+        // 4. Last resort: wrap the raw text in a minimal blog structure
+        log.warn("Could not parse Ollama output as JSON; building minimal blog from raw text");
+        return buildMinimalBlog(rawOutput);
     }
 
     // ── Utility ───────────────────────────────────────────────────────────────
+
+    private String truncateTranscript(String transcript) {
+        if (transcript == null) return "";
+        return transcript.length() <= transcriptMaxChars
+                ? transcript
+                : transcript.substring(0, transcriptMaxChars) + "…";
+    }
 
     /**
      * Extracts the 11-character YouTube video ID from a URL using standard URI
@@ -261,32 +342,32 @@ public class AIService {
         return Optional.empty();
     }
 
-    // ── Placeholder fallback ──────────────────────────────────────────────────
+    /** Sets the YouTube thumbnail URL on the blog if not already populated. */
+    private void backfillCoverImage(AIGeneratedBlog blog, String videoUrl) {
+        if (blog.getCoverImageUrl() == null || blog.getCoverImageUrl().isBlank()) {
+            extractYoutubeId(videoUrl).ifPresent(id ->
+                    blog.setCoverImageUrl("https://img.youtube.com/vi/" + id + "/maxresdefault.jpg")
+            );
+        }
+    }
 
-    private AIGeneratedBlog buildPlaceholderBlog(String videoUrl) {
+    // ── Minimal fallback ──────────────────────────────────────────────────────
+
+    private AIGeneratedBlog buildMinimalBlog(String rawContent) {
         AIGeneratedBlog blog = new AIGeneratedBlog();
         blog.setTitle("Video Blog Post");
         blog.setSeoTitle("Video Blog Post");
-        blog.setSeoDescription("A blog post generated from a video.");
+        blog.setSeoDescription("A blog post generated from a video transcript.");
         blog.setSlug("video-blog-post");
-        blog.setExcerpt("This is a placeholder. Set the `gemini.api.key` property to enable AI-powered blog generation.");
+        blog.setExcerpt("Blog generated from video transcript.");
         blog.setCategory("News");
         blog.setReadingTimeMinutes(3);
-        blog.setContent("""
-                # Video Blog Post
-
-                This is a placeholder blog post. Configure the `gemini.api.key` application property \
-                (or the `GEMINI_API_KEY` environment variable) to enable AI-powered generation from \
-                video URLs.
-                """);
-        blog.setKeyTakeaways(List.of("Configure `gemini.api.key` for full AI functionality"));
+        blog.setContent(rawContent != null ? rawContent : "No content available.");
+        blog.setKeyTakeaways(List.of());
         blog.setTags(List.of("video", "blog"));
         blog.setTableOfContents(List.of());
         blog.setSections(List.of());
         blog.setFaqs(List.of());
-        extractYoutubeId(videoUrl).ifPresent(id ->
-                blog.setCoverImageUrl("https://img.youtube.com/vi/" + id + "/maxresdefault.jpg")
-        );
         return blog;
     }
 }

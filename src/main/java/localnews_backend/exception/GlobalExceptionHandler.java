@@ -15,6 +15,24 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(InvalidYoutubeUrlException.class)
+    public ResponseEntity<Map<String, Object>> handleInvalidYoutubeUrl(InvalidYoutubeUrlException ex) {
+        Map<String, Object> body = buildBody(HttpStatus.BAD_REQUEST, ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    @ExceptionHandler(TranscriptExtractionException.class)
+    public ResponseEntity<Map<String, Object>> handleTranscriptExtraction(TranscriptExtractionException ex) {
+        Map<String, Object> body = buildBody(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage());
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
+    }
+
+    @ExceptionHandler(OllamaException.class)
+    public ResponseEntity<Map<String, Object>> handleOllama(OllamaException ex) {
+        Map<String, Object> body = buildBody(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidationErrors(MethodArgumentNotValidException ex) {
         Map<String, String> fieldErrors = new HashMap<>();
