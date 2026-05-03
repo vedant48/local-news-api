@@ -145,17 +145,7 @@ public class TranscriptExtractionService {
         int exitCode = process.exitValue();
         if (exitCode != 0) {
             log.warn("yt-dlp exited with code {}: {}", exitCode, processOutput);
-
-            // Recognise common "no subtitles" messages in the output
-            String lowerOutput = processOutput.toLowerCase();
-            if (lowerOutput.contains("no automatic captions")
-                    || lowerOutput.contains("no subtitles")
-                    || lowerOutput.contains("subtitles not available")) {
-                throw new TranscriptExtractionException(
-                    "No English subtitles are available for this video");
-            }
-            throw new TranscriptExtractionException(
-                    "yt-dlp failed (exit " + exitCode + "). Output: " + truncate(processOutput, 300));
+            throw createYtDlpFailure(exitCode, processOutput);
         }
 
         log.debug("yt-dlp output: {}", processOutput);
@@ -208,5 +198,25 @@ public class TranscriptExtractionService {
 
     private String truncate(String s, int max) {
         return s != null && s.length() > max ? s.substring(0, max) + "…" : s;
+    }
+
+    private TranscriptExtractionException createYtDlpFailure(int exitCode, String processOutput) {
+        String lowerOutput = processOutput == null ? "" : processOutput.toLowerCase();
+
+        if (lowerOutput.contains("no automatic captions")
+                || lowerOutput.contains("no subtitles")
+                || lowerOutput.contains("subtitles not available")) {
+            return new TranscriptExtractionException(
+                    "No English subtitles are available for this video");
+        }
+
+        if (lowerOutput.contains("sign in to confirm you") && lowerOutput.contains("not a bot")) {
+            return new TranscriptExtractionException(
+                    "YouTube blocked automated access for this video (bot-check). " +
+                    "Try another video, or configure yt-dlp authentication cookies.");
+        }
+
+        return new TranscriptExtractionException(
+                "yt-dlp failed (exit " + exitCode + "). Output: " + truncate(processOutput, 300));
     }
 }
