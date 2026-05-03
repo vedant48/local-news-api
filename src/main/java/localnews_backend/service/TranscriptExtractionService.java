@@ -101,9 +101,10 @@ public class TranscriptExtractionService {
 
         List<String> command = List.of(
                 "yt-dlp",
+                "--write-subs",
                 "--write-auto-subs",
                 "--skip-download",
-                "--sub-lang", "en",
+                "--sub-lang", "en.*,en",
                 "--no-playlist",
                 "-o", outputTemplate,
                 youtubeUrl
@@ -151,7 +152,7 @@ public class TranscriptExtractionService {
                     || lowerOutput.contains("no subtitles")
                     || lowerOutput.contains("subtitles not available")) {
                 throw new TranscriptExtractionException(
-                        "No English subtitles are available for this video");
+                    "No English subtitles are available for this video");
             }
             throw new TranscriptExtractionException(
                     "yt-dlp failed (exit " + exitCode + "). Output: " + truncate(processOutput, 300));
