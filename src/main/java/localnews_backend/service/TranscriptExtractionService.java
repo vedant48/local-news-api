@@ -13,6 +13,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
@@ -41,6 +42,10 @@ public class TranscriptExtractionService {
 
     @Value("${ytdlp.timeout.seconds:120}")
     private int ytdlpTimeoutSeconds;
+
+    /** Optional path to a Netscape-format cookies file. When set, passed to yt-dlp via {@code --cookies}. */
+    @Value("${ytdlp.cookies.file:}")
+    private String ytdlpCookiesFile;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -99,16 +104,24 @@ public class TranscriptExtractionService {
     private void runYtDlp(String youtubeUrl, Path tempDir) {
         String outputTemplate = tempDir.resolve("output.%(ext)s").toString();
 
-        List<String> command = List.of(
+        // Use android,web player clients to reduce bot-check rejections
+        List<String> command = new ArrayList<>(List.of(
                 "yt-dlp",
                 "--write-subs",
                 "--write-auto-subs",
                 "--skip-download",
                 "--sub-lang", "en.*,en",
                 "--no-playlist",
-                "-o", outputTemplate,
-                youtubeUrl
-        );
+                "--extractor-args", "youtube:player_client=android,web",
+                "-o", outputTemplate
+        ));
+
+        if (ytdlpCookiesFile != null && !ytdlpCookiesFile.isBlank()) {
+            command.add("--cookies");
+            command.add(ytdlpCookiesFile.trim());
+        }
+
+        command.add(youtubeUrl);
 
         log.info("Running yt-dlp for URL: {}", youtubeUrl);
         log.debug("yt-dlp command: {}", command);
