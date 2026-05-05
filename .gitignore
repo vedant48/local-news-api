@@ -31,3 +31,21 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Node (if any)
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+
+# Logs
+*.log

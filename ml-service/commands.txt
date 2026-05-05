@@ -1,0 +1,12 @@
+1. venv\Scripts\activate                   --- for activating virtual environment
+2. pip install -r requirements.txt        ---to install all dependency
+3. uvicorn app.main:app --reload --port 8000   ---to run fastApi 
+
+
+Follow these step to run ml service ----
+
+cd ml-service
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
