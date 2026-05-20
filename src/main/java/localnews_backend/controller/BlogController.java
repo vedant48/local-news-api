@@ -3,6 +3,7 @@ package localnews_backend.controller;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import localnews_backend.dto.BlogRequest;
+import localnews_backend.dto.ManualBlogRequest;
 import localnews_backend.model.Blog;
 import localnews_backend.model.User;
 import localnews_backend.repository.UserRepository;
@@ -43,7 +44,7 @@ public class BlogController {
 
     /** Manually create a blog post (REPORTER role required). */
     @PostMapping
-    public Blog createManualBlog(@Valid @RequestBody localnews_backend.dto.ManualBlogRequest request,
+    public Blog createManualBlog(@Valid @RequestBody ManualBlogRequest request,
                                  HttpServletRequest httpRequest) {
         String email = (String) httpRequest.getAttribute("email");
 
