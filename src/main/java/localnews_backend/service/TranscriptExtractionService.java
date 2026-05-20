@@ -10,6 +10,10 @@ import org.springframework.stereotype.Service;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,8 +21,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Extracts the English subtitle transcript from a YouTube video using
@@ -39,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 public class TranscriptExtractionService {
 
     private static final String YOUTUBE_ID_REGEX = "[A-Za-z0-9_-]{11}";
+    private static final Pattern XML_TEXT_TAG = Pattern.compile("<text\\b[^>]*>(.*?)</text>", Pattern.DOTALL);
 
     @Value("${ytdlp.timeout.seconds:120}")
     private int ytdlpTimeoutSeconds;
@@ -62,15 +70,23 @@ public class TranscriptExtractionService {
 
         Path tempDir = createTempDir();
         try {
-            runYtDlp(youtubeUrl, tempDir);
-            File vttFile = findVttFile(tempDir);
-            String vttContent = readFile(vttFile);
-            String transcript = VttParser.parse(vttContent);
-            if (transcript.isBlank()) {
-                throw new TranscriptExtractionException(
-                        "Transcript is empty – the video may have no readable subtitle content");
+            try {
+                runYtDlp(youtubeUrl, tempDir);
+                File vttFile = findVttFile(tempDir);
+                String vttContent = readFile(vttFile);
+                String transcript = VttParser.parse(vttContent);
+                if (transcript.isBlank()) {
+                    throw new TranscriptExtractionException(
+                            "Transcript is empty – the video may have no readable subtitle content");
+                }
+                return transcript;
+            } catch (TranscriptExtractionException e) {
+                if (e.getMessage() != null && e.getMessage().toLowerCase().contains("bot-check")) {
+                    log.info("yt-dlp hit bot-check, trying timedtext fallback");
+                    return extractTranscriptViaTimedText(youtubeUrl);
+                }
+                throw e;
             }
-            return transcript;
         } finally {
             deleteTempDir(tempDir);
         }
@@ -231,5 +247,106 @@ public class TranscriptExtractionService {
 
         return new TranscriptExtractionException(
                 "yt-dlp failed (exit " + exitCode + "). Output: " + truncate(processOutput, 300));
+    }
+
+    private String extractTranscriptViaTimedText(String youtubeUrl) {
+        String videoId = extractYoutubeId(youtubeUrl)
+                .orElseThrow(() -> new TranscriptExtractionException("Could not parse YouTube video id from URL"));
+        List<String> urls = List.of(
+                "https://www.youtube.com/api/timedtext?lang=en&v=" + videoId,
+                "https://www.youtube.com/api/timedtext?lang=en-US&v=" + videoId,
+                "https://www.youtube.com/api/timedtext?lang=en&kind=asr&v=" + videoId
+        );
+
+        for (String url : urls) {
+            String transcript = fetchTimedTextTranscript(url);
+            if (!transcript.isBlank()) {
+                return transcript;
+            }
+        }
+
+        throw new TranscriptExtractionException(
+                "YouTube blocked automated access for this video and transcript fallback failed. " +
+                        "Try another video, or configure yt-dlp authentication cookies.");
+    }
+
+    private String fetchTimedTextTranscript(String timedTextUrl) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(timedTextUrl)).GET().build();
+            HttpResponse<String> response = HttpClient.newHttpClient()
+                    .send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() != 200 || response.body() == null || response.body().isBlank()) {
+                return "";
+            }
+            return parseTimedTextXml(response.body());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } catch (Exception e) {
+            log.warn("TimedText fallback request failed: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    private String parseTimedTextXml(String xml) {
+        Matcher matcher = XML_TEXT_TAG.matcher(xml);
+        List<String> parts = new ArrayList<>();
+        while (matcher.find()) {
+            String decoded = URLDecoder.decode(matcher.group(1), StandardCharsets.UTF_8);
+            String normalized = decodeXmlEntities(decoded)
+                    .replaceAll("<[^>]+>", "")
+                    .replaceAll("\\s+", " ")
+                    .trim();
+            if (!normalized.isBlank()) {
+                parts.add(normalized);
+            }
+        }
+        return String.join(" ", parts).trim();
+    }
+
+    private String decodeXmlEntities(String text) {
+        return text
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'");
+    }
+
+    private Optional<String> extractYoutubeId(String videoUrl) {
+        try {
+            URI uri = URI.create(videoUrl);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
+
+            if (host.endsWith("youtu.be")) {
+                String path = uri.getPath();
+                if (path != null && path.length() > 1) {
+                    String id = path.substring(1);
+                    return id.matches(YOUTUBE_ID_REGEX) ? Optional.of(id) : Optional.empty();
+                }
+            }
+
+            if (host.endsWith("youtube.com")) {
+                String path = uri.getPath() == null ? "" : uri.getPath();
+                String query = uri.getQuery() == null ? "" : uri.getQuery();
+
+                if (path.equals("/watch")) {
+                    for (String part : query.split("&")) {
+                        String[] kv = part.split("=", 2);
+                        if (kv.length == 2 && kv[0].equals("v") && kv[1].matches(YOUTUBE_ID_REGEX)) {
+                            return Optional.of(kv[1]);
+                        }
+                    }
+                }
+
+                if (path.startsWith("/embed/") || path.startsWith("/shorts/")) {
+                    String[] segments = path.split("/");
+                    String id = segments[segments.length - 1];
+                    return id.matches(YOUTUBE_ID_REGEX) ? Optional.of(id) : Optional.empty();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return Optional.empty();
     }
 }
