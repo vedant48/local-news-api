@@ -11,7 +11,7 @@ RUN ./mvnw package -DskipTests -q
 # ---- Runtime stage ----
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates python3 ffmpeg yt-dlp
 COPY --from=builder /app/target/*.jar app.jar
 
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75 -Djdk.tls.client.protocols=TLSv1.2,TLSv1.3"
