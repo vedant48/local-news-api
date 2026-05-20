@@ -2,6 +2,7 @@ package localnews_backend.service;
 
 import localnews_backend.dto.AIGeneratedBlog;
 import localnews_backend.dto.BlogRequest;
+import localnews_backend.dto.ManualBlogRequest;
 import localnews_backend.model.*;
 import localnews_backend.repository.BlogRepository;
 import localnews_backend.repository.UserRepository;
@@ -57,7 +58,7 @@ public class BlogService {
         return blogRepository.save(blog);
     }
 
-    public Blog createManualBlog(localnews_backend.dto.ManualBlogRequest request, String email) {
+    public Blog createManualBlog(ManualBlogRequest request, String email) {
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
