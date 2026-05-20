@@ -41,6 +41,26 @@ public class BlogController {
         return blogService.generateBlog(request, email);
     }
 
+    /** Manually create a blog post (REPORTER role required). */
+    @PostMapping
+    public Blog createManualBlog(@Valid @RequestBody localnews_backend.dto.ManualBlogRequest request,
+                                 HttpServletRequest httpRequest) {
+        String email = (String) httpRequest.getAttribute("email");
+
+        if (email == null) {
+            throw new RuntimeException("Unauthorized");
+        }
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!user.getRole().equals("REPORTER")) {
+            throw new RuntimeException("Access denied");
+        }
+
+        return blogService.createManualBlog(request, email);
+    }
+
     /** Return all published blogs (public). */
     @GetMapping
     public List<Blog> getAllBlogs() {

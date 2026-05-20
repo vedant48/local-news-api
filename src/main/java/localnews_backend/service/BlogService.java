@@ -57,6 +57,38 @@ public class BlogService {
         return blogRepository.save(blog);
     }
 
+    public Blog createManualBlog(localnews_backend.dto.ManualBlogRequest request, String email) {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        LocalDateTime now = LocalDateTime.now();
+
+        String slug = request.getTitle() != null ? request.getTitle().toLowerCase().replaceAll("[^a-z0-9]+", "-") : "";
+
+        int readingTime = 1;
+        if (request.getContent() != null && !request.getContent().isEmpty()) {
+            int wordCount = request.getContent().split("\\s+").length;
+            readingTime = Math.max(1, (int) Math.ceil(wordCount / 200.0));
+        }
+
+        Blog blog = Blog.builder()
+                .title(request.getTitle())
+                .content(request.getContent())
+                .excerpt(request.getExcerpt())
+                .category(request.getCategory())
+                .coverImageUrl(request.getCoverImageUrl())
+                .location(request.getLocation())
+                .tags(request.getTags())
+                .slug(slug)
+                .readingTimeMinutes(readingTime)
+                .authorId(user.getId())
+                .createdAt(now)
+                .updatedAt(now)
+                .build();
+
+        return blogRepository.save(blog);
+    }
+
     public List<Blog> getAllBlogs() {
         return blogRepository.findAll();
     }
