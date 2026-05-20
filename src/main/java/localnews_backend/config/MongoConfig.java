@@ -25,20 +25,59 @@ public class MongoConfig {
 
     private ConnectionString connectionString;
 
+    // @PostConstruct
+    // public void init() {
+    //     String resolvedMongoUri = Objects.requireNonNull(mongoUri, "spring.data.mongodb.uri must be configured").trim();
+    //     if (resolvedMongoUri.isEmpty()) {
+    //         throw new IllegalStateException("spring.data.mongodb.uri must be configured and non-empty");
+    //     }
+    //     connectionString = new ConnectionString(resolvedMongoUri);
+    //     String hostSummary = String.join(",", connectionString.getHosts());
+    //     String database = connectionString.getDatabase() != null ? connectionString.getDatabase() : "(default)";
+    //     logger.info("MongoDB target resolved: hosts='{}', database='{}'", hostSummary, database);
+    // }  ye strict rule laga hua h bohot jyada agar db band hoga toh crash kar jayega application 
+
+    //replacement ---
     @PostConstruct
     public void init() {
-        String resolvedMongoUri = Objects.requireNonNull(mongoUri, "spring.data.mongodb.uri must be configured").trim();
-        if (resolvedMongoUri.isEmpty()) {
-            throw new IllegalStateException("spring.data.mongodb.uri must be configured and non-empty");
+
+        if (mongoUri == null || mongoUri.trim().isEmpty()) {
+            logger.warn("MongoDB URI not configured. Mongo features will be disabled.");
+            return;
         }
-        connectionString = new ConnectionString(resolvedMongoUri);
-        String hostSummary = String.join(",", connectionString.getHosts());
-        String database = connectionString.getDatabase() != null ? connectionString.getDatabase() : "(default)";
-        logger.info("MongoDB target resolved: hosts='{}', database='{}'", hostSummary, database);
+
+    connectionString = new ConnectionString(mongoUri.trim());
+
+    String hostSummary = String.join(",", connectionString.getHosts());
+    String database = connectionString.getDatabase() != null
+            ? connectionString.getDatabase()
+            : "(default)";
+
+    logger.info("MongoDB target resolved: hosts='{}', database='{}'", hostSummary, database);
     }
+
+    // @Bean
+    // public MongoClientSettings mongoClientSettings() {
+    //     return MongoClientSettings.builder()
+    //             .applyConnectionString(connectionString)
+    //             .applyToSocketSettings(b -> b
+    //                     .connectTimeout(30, TimeUnit.SECONDS)
+    //                     .readTimeout(30, TimeUnit.SECONDS))
+    //             .applyToClusterSettings(b -> b
+    //                     .serverSelectionTimeout(30, TimeUnit.SECONDS))
+    //             .retryWrites(true)
+    //             .retryReads(true)
+    //             .build();
+    // }
 
     @Bean
     public MongoClientSettings mongoClientSettings() {
+
+        if (connectionString == null) {
+            logger.warn("MongoClientSettings not created because Mongo URI is missing");
+            return MongoClientSettings.builder().build();
+        }
+
         return MongoClientSettings.builder()
                 .applyConnectionString(connectionString)
                 .applyToSocketSettings(b -> b
